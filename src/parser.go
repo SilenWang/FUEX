@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/brentp/vcfgo"
+	"github.com/urfave/cli"
 )
 
 type geneRecord struct {
@@ -130,13 +131,13 @@ func breakSearch(breakP string, info geneRecord) (string, bool) {
 	pos, _ := strconv.ParseInt(strings.Split(breakP, ":")[1], 10, 64)
 	for idx, edges := range info.exon {
 		if edges[0] <= pos && pos < edges[1] {
-			idxStr := strconv.Itoa(idx)
+			idxStr := strconv.Itoa(idx + 1)
 			return strings.Join([]string{"Ex", idxStr}, ""), true
 		}
 	}
 	for idx, edges := range info.intron {
 		if edges[0] <= pos && pos < edges[1] {
-			idxStr := strconv.Itoa(idx)
+			idxStr := strconv.Itoa(idx + 1)
 			return strings.Join([]string{"In", idxStr}, ""), true
 		}
 	}
@@ -191,17 +192,131 @@ func geneRep(str string, geneA string, geneB string) string {
 	return str
 }
 
-func bndParser(variant *vcfgo.Variant,
+func recordParser(variant *vcfgo.Variant,
+	svtype string,
 	tran2info map[string]geneRecord,
 	gene2tran map[string][]string,
 	targetTrans map[string]interface{}) (bndStr string, err error) { //ann 解析的部分直接写这里了
-	// bases := "ATGCN"
+	// 本程序的解析器只从ANN内读取基因注释信息, 因此相较源程序更为通用, 可以将不同类型的解读写到一起
 
+	// 获取类型信息
+	// svtype, _ := variant.Info().Get("SVTYPE")
+
+	// 断点及融合形式获取
+	var breakA string
+	var breakB string
+	orientation := [4]string{}
+	switch {
+	case svtype == "BND":
+		breakA = strings.Join([]string{variant.Chromosome, strconv.FormatUint(variant.Pos, 10)}, ":")
+		reg := regexp.MustCompile(`CHR.+:\d+`)
+		breakB = strings.Replace(reg.FindString(variant.Alt()[0]), "CHR", "chr", 1)
+		alt := variant.Alt()[0] // 只会有一个
+		switch {
+		case strings.Contains(alt, "["):
+			alts := strings.Split(alt, "[")
+			switch {
+			case alts[0] == "":
+				// "GENE_B<GENE_A>"
+				orientation[0] = "GENE_B"
+				orientation[1] = "<"
+				orientation[2] = "GENE_A"
+				orientation[3] = ">"
+			default:
+				// "GENE_A>GENE_B>"
+				orientation[0] = "GENE_A"
+				orientation[1] = ">"
+				orientation[2] = "GENE_B"
+				orientation[3] = ">"
+			}
+		case strings.Contains(alt, "]"):
+			alts := strings.Split(alt, "]")
+			switch {
+			case alts[0] == "":
+				// "GENE_B>GENE_A>"
+				orientation[0] = "GENE_B"
+				orientation[1] = ">"
+				orientation[2] = "GENE_A"
+				orientation[3] = ">"
+			default:
+				// "GENE_A>GENE_B<"
+				orientation[0] = "GENE_A"
+				orientation[1] = ">"
+				orientation[2] = "GENE_B"
+				orientation[3] = "<"
+			}
+		}
+	default:
+		posA := variant.Pos
+		posB := uint64(variant.End())
+		breakA = strings.Join([]string{variant.Chromosome, strconv.FormatUint(posA, 10)}, ":")
+		breakB = strings.Join([]string{variant.Chromosome, strconv.FormatUint(uint64(variant.End()), 10)}, ":")
+		switch {
+		case posA > posB:
+			switch {
+			case svtype == "INV_1":
+				// 修正svtype的值, 防止影响后面输出
+				// {GENE_A}>{GENE_B}<
+				svtype = "INV"
+				orientation[0] = "GENE_A"
+				orientation[1] = ">"
+				orientation[2] = "GENE_B"
+				orientation[3] = "<"
+			case svtype == "INV_2":
+				// 修正svtype的值, 防止影响后面输出
+				// "{GENE_A}<{GENE_B}>"
+				svtype = "INV"
+				orientation[0] = "GENE_A"
+				orientation[1] = "<"
+				orientation[2] = "GENE_B"
+				orientation[3] = ">"
+			case svtype == "DEL":
+				// "{GENE_B}>{GENE_A}>"
+				orientation[0] = "GENE_B"
+				orientation[1] = ">"
+				orientation[2] = "GENE_A"
+				orientation[3] = ">"
+			case svtype == "DUP":
+				// "{GENE_A}>{GENE_B}>"
+				orientation[0] = "GENE_A"
+				orientation[1] = ">"
+				orientation[2] = "GENE_B"
+				orientation[3] = ">"
+			}
+		default:
+			switch {
+			case svtype == "INV_1":
+				// 修正svtype的值, 防止影响后面输出
+				// "{GENE_B}>{GENE_A}<"
+				svtype = "INV"
+				orientation[0] = "GENE_B"
+				orientation[1] = ">"
+				orientation[2] = "GENE_A"
+				orientation[3] = "<"
+			case svtype == "INV_2":
+				// 修正svtype的值, 防止影响后面输出
+				// "{GENE_B}<{GENE_A}>"
+				svtype = "INV"
+				orientation[0] = "GENE_B"
+				orientation[1] = "<"
+				orientation[2] = "GENE_A"
+				orientation[3] = ">"
+			case svtype == "DEL":
+				// "{GENE_A}>{GENE_B}>"
+				orientation[0] = "GENE_A"
+				orientation[1] = ">"
+				orientation[2] = "GENE_B"
+				orientation[3] = ">"
+			case svtype == "DUP":
+				// "{GENE_B}>{GENE_A}>"
+				orientation[0] = "GENE_B"
+				orientation[1] = ">"
+				orientation[2] = "GENE_A"
+				orientation[3] = ">"
+			}
+		}
+	}
 	// 获取不需要解析的信息
-	breakA := strings.Join([]string{variant.Chromosome, strconv.FormatUint(variant.Pos, 10)}, ":")
-	reg := regexp.MustCompile(`CHR.+:\d+`)
-	breakB := strings.Replace(reg.FindString(variant.Alt()[0]), "CHR", "chr", 1)
-	svtype := "BND"
 	pe := variant.Samples[0].Fields["PE"]
 	sr := variant.Samples[0].Fields["SR"]
 
@@ -274,45 +389,7 @@ func bndParser(variant *vcfgo.Variant,
 		strandA, strandB = strandB, strandA
 	}
 
-	// 基本信息准备完毕, 根据ALK读取原始的方向信息
-	orientation := [4]string{}
-	alt := variant.Alt()[0] // 只会有一个
-	switch {
-	case strings.Contains(alt, "["):
-		alts := strings.Split(alt, "[")
-		switch {
-		case alts[0] == "":
-			// "GENE_B<GENE_A>"
-			orientation[0] = "GENE_B"
-			orientation[1] = "<"
-			orientation[2] = "GENE_A"
-			orientation[3] = ">"
-		default:
-			// "GENE_A>GENE_B>"
-			orientation[0] = "GENE_A"
-			orientation[1] = ">"
-			orientation[2] = "GENE_B"
-			orientation[3] = ">"
-		}
-	case strings.Contains(alt, "]"):
-		alts := strings.Split(alt, "]")
-		switch {
-		case alts[0] == "":
-			// "GENE_B>GENE_A>"
-			orientation[0] = "GENE_B"
-			orientation[1] = ">"
-			orientation[2] = "GENE_A"
-			orientation[3] = ">"
-		default:
-			// "GENE_A>GENE_B<"
-			orientation[0] = "GENE_A"
-			orientation[1] = ">"
-			orientation[2] = "GENE_B"
-			orientation[3] = "<"
-		}
-	}
-
-	// 进行方向矫正
+	// 基本信息准备完毕,  进行方向矫正
 	modOri := orientation
 	if strandA == "-" {
 		for idx, val := range modOri {
@@ -343,16 +420,22 @@ func bndParser(variant *vcfgo.Variant,
 			if strings.Contains(val, "GENE") {
 				key := strings.Join([]string{"break", val[len(val)-1:]}, "") // 拼接出key
 				locate := locates[key]
-				if strings.Contains(locate, "In") { // 内含子则校正为外显子
+				switch {
+				case strings.Contains(locate, "In"): // 内含子则校正为外显子
 					num, _ := strconv.Atoi(locate[2:])
-					switch {
-					case modOri[idx+1] == ">":
+					if modOri[idx+1] == ">" { // <的话外显子号等于内含子号
 						num = num + 1
-					case modOri[idx+1] == "<":
-						num = num - 1
 					}
+					// switch {
+					// case modOri[idx+1] == ">":
+					// 	num = num + 1
+					// case modOri[idx+1] == "<":
+					// 	num = num - 1
+					// }
 					// 修正结果替换
 					locates[key] = strings.Join([]string{"Ex", strconv.Itoa(num)}, "")
+				case strings.Contains(locate, "Ex"): // 断点在Ex则加*提示
+					locates[key] = strings.Join([]string{locate, "*"}, "")
 				}
 			}
 		}
@@ -410,11 +493,7 @@ func bndParser(variant *vcfgo.Variant,
 	return "", err
 }
 
-// func otherParser(variant *vcfgo.Variant) {
-
-// }
-
-func run() {
+func run(vcfFile string, outFile string) {
 	tran2info, gene2tran := getDB("refGene.txt") // 获取数据结构
 	// 载入目标转录本信息
 	tarTranFile := "RXA_gene_trans.json"
@@ -427,12 +506,12 @@ func run() {
 	targetTrans := targetTransFile.(map[string]interface{})
 
 	// 准备写入对象
-	out, err := os.Create("test.true")
+	out, err := os.Create(outFile)
 	if err != nil {
 		log.Fatal(err)
 	}
 	out.Close()
-	out, err = os.OpenFile("test.true", os.O_WRONLY, 0666)
+	out, err = os.OpenFile(outFile, os.O_WRONLY, 0666)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -441,7 +520,6 @@ func run() {
 	bufferedWriter := bufio.NewWriter(out)
 
 	// const vcfFile = "test.vcf"
-	vcfFile := "test.vcf"
 	// 打开文件获取阅读对象
 	file, err := os.Open(vcfFile)
 	defer file.Close() // 自动关闭
@@ -461,8 +539,8 @@ func run() {
 			}
 			svtype, _ := variant.Info().Get("SVTYPE")
 			switch {
-			case svtype == "BND":
-				outLine, fuse := bndParser(variant, tran2info, gene2tran, targetTrans)
+			case svtype == "INV": // INV两端的端点是两种融合形式, 所以这里特殊处理
+				outLine, fuse := recordParser(variant, "INV_1", tran2info, gene2tran, targetTrans)
 				if fuse == nil {
 					_, err := bufferedWriter.WriteString(
 						strings.Join([]string{outLine, "\n"}, ""),
@@ -472,15 +550,71 @@ func run() {
 					}
 					bufferedWriter.Flush()
 				}
-				println(outLine)
+				outLine, fuse = recordParser(variant, "INV_2", tran2info, gene2tran, targetTrans)
+				if fuse == nil {
+					_, err := bufferedWriter.WriteString(
+						strings.Join([]string{outLine, "\n"}, ""),
+					)
+					if err != nil {
+						log.Fatal(err)
+					}
+					bufferedWriter.Flush()
+				}
+			// println(outLine)				continue
 			default:
-				continue
+				outLine, fuse := recordParser(variant, svtype.(string), tran2info, gene2tran, targetTrans)
+				if fuse == nil {
+					_, err := bufferedWriter.WriteString(
+						strings.Join([]string{outLine, "\n"}, ""),
+					)
+					if err != nil {
+						log.Fatal(err)
+					}
+					bufferedWriter.Flush()
+				}
+				// println(outLine)
 			}
 		}
 	}
 	vcfReader.Clear()
 }
 
+func argParse() {
+	// 定义获取的变量
+	var vcfFile string
+	var out string
+
+	// 指定程序基本信息
+	app := cli.NewApp()
+	app.Name = "FUEX"
+	app.Usage = "Fusion extracter of SV detection tools"
+	app.Version = "0.1.1"
+
+	app.Flags = []cli.Flag{
+		cli.StringFlag{
+			Name:        "i",
+			Usage:       "Input file of `VCF` format",
+			Destination: &vcfFile,
+		},
+		cli.StringFlag{
+			Name:        "o",
+			Usage:       "`OUTPUT` file",
+			Destination: &out,
+		},
+	}
+
+	app.Action = func(c *cli.Context) error {
+		fmt.Println(vcfFile, out)
+		run(vcfFile, out)
+		return nil
+	}
+
+	err := app.Run(os.Args)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
 func main() {
-	run()
+	argParse()
 }

@@ -9,7 +9,10 @@ Now this project is in alpha stage, core function is ready.
 TODO:
 
 - [x] BND parse
+- [x] INV, DUP, DEL parse
 - [x] Oritention check
 - [ ] Multi-Format Support
-- [ ] Args parse
+- [x] Args parse
 - [ ] Debug mode
+- [ ] Split parser function to smaller function
+- [ ] Multi-Process
